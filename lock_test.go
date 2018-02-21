@@ -804,7 +804,7 @@ func validateLockStatuses(actual, expected []lock.LockStatus) error {
 
 	// Zero out some of the fields in the actual LockStatuses that make
 	// it hard to do comparisons and also aren't necessary for this function.
-	for i, _ := range actualSorted {
+	for i := range actualSorted {
 		actualSorted[i].CreatedAt = time.Time{}
 		actualSorted[i].RenewedAt = nil
 		actualSorted[i].TTL = 0
