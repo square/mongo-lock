@@ -1,7 +1,7 @@
 # Distributed Locks in MongoDB
 
 [![Build Status](https://travis-ci.org/square/mongo-lock.svg?branch=master)](https://travis-ci.org/square/mongo-lock)
-[![Go Report Card](https://goreportcard.com/badge/github.com/square/mongo-lock?)](https://goreportcard.com/report/github.com/square/mongo-lock)
+[![Go Report Card](https://goreportcard.com/badge/github.com/square/mongo-lock)](https://goreportcard.com/report/github.com/square/mongo-lock)
 [![Coverage Status](https://coveralls.io/repos/github/square/mongo-lock/badge.svg?branch=master&)](https://coveralls.io/github/square/mongo-lock?branch=master)
 [![GoDoc](https://godoc.org/github.com/square/mongo-lock?status.svg)](https://godoc.org/github.com/square/mongo-lock)
 

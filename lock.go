@@ -330,6 +330,7 @@ func (c *Client) Status(f Filter) ([]LockStatus, error) {
 		filterCond = append(filterCond, bson.M{
 			"$lt": []interface{}{"$$lock.createdAt", f.CreatedBefore},
 		})
+
 	}
 	if !f.CreatedAfter.IsZero() {
 		xQuery["exclusive.createdAt"] = bson.M{
@@ -356,6 +357,9 @@ func (c *Client) Status(f Filter) ([]LockStatus, error) {
 		}
 		filterCond = append(filterCond, bson.M{
 			"$lt": []interface{}{"$$lock.expiresAt", ttlTime},
+		}, bson.M{
+			// Exclude locks without a TTL.
+			"$gt": []interface{}{"$$lock.expiresAt", nil},
 		})
 	}
 	if f.TTLgte > 0 {
