@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/globalsign/mgo"
 	"github.com/go-test/deep"
 	"github.com/mongo-go/testdb"
 	"github.com/square/mongo-lock"
-	"gopkg.in/mgo.v2"
 )
 
 var testDb *testdb.TestDB

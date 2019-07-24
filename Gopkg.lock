@@ -2,6 +2,18 @@
 
 
 [[projects]]
+  branch = "master"
+  name = "github.com/globalsign/mgo"
+  packages = [
+    ".",
+    "bson",
+    "internal/json",
+    "internal/sasl",
+    "internal/scram"
+  ]
+  revision = "eeefdecb41b842af6dc652aaea4026e8403e62df"
+
+[[projects]]
   name = "github.com/go-test/deep"
   packages = ["."]
   revision = "6592d9cc0a499ad2d5f574fde80a2b5c5cc3b4f5"
@@ -11,23 +23,11 @@
   branch = "master"
   name = "github.com/mongo-go/testdb"
   packages = ["."]
-  revision = "7bac3b9410755a679410ab619e83ca355615bd72"
-
-[[projects]]
-  branch = "v2"
-  name = "gopkg.in/mgo.v2"
-  packages = [
-    ".",
-    "bson",
-    "internal/json",
-    "internal/sasl",
-    "internal/scram"
-  ]
-  revision = "3f83fa5005286a7fe593b055f0d7771a7dce4655"
+  revision = "a72a12eee610bf217a9d929dd8cfd7eb9027fc9a"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "a8a653861693384c092442c444507a07cdefd15b7213c8f2d7c11a9bc5a2e58b"
+  inputs-digest = "e0fca559d60e270168d1bf49cee92004c4fb4c8f64328208eb4ec131dc124431"
   solver-name = "gps-cdcl"
   solver-version = 1
