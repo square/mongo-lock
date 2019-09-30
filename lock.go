@@ -158,10 +158,14 @@ func (c *Client) CreateIndexes() error {
 // provided lockId. Additional details about the lock can be supplied via
 // LockDetails.
 func (c *Client) XLock(resourceName, lockId string, ld LockDetails) error {
+	currentTime := time.Now()
 	selector := bson.M{
-		"resource":           resourceName,
-		"exclusive.acquired": false,
-		"shared.count":       0,
+		"resource": resourceName,
+		"$or": []bson.M{
+			bson.M{"exclusive.acquired": false},
+			bson.M{"exclusive.expiresAt": bson.M{"$lte": &currentTime}},
+		},
+		"shared.count": 0,
 	}
 
 	r := &resource{
