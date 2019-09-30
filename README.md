@@ -45,7 +45,7 @@ import (
 	"log"
 
 	"github.com/square/mongo-lock"
-	"gopkg.in/mgo.v2"
+	"github.com/globalsign/mgo"
 )
 
 func main() {
