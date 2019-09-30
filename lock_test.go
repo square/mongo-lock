@@ -115,6 +115,24 @@ func TestLockExclusive(t *testing.T) {
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
+
+	// Create a lock with some resource name and some lockId
+	// that resource expires after some time
+	// then with same resource name and lockId can able to create lock.
+	err = client.XLock("resource4", "cccc", lock.LockDetails{TTL: 2})
+	if err != nil {
+		t.Error(err)
+	}
+
+	// Waiting to expire the lock with resource name "resource4" and lockId "cccc".
+	time.Sleep(3 * time.Second)
+
+	// Try to lock "reource4" with "cccc", which is already expired.
+	err = client.XLock("resource4", "cccc", lock.LockDetails{})
+	if err != nil {
+		t.Errorf("err = %s,fail to lock due to the resource already being locked", err)
+	}
+
 }
 
 func TestLockShared(t *testing.T) {
