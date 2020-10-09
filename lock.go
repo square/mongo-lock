@@ -4,12 +4,15 @@
 package lock
 
 import (
+	"context"
 	"errors"
 	"sort"
 	"time"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 const (
@@ -27,6 +30,9 @@ var (
 
 	// ErrLockNotFound is returned when a lock cannot be found.
 	ErrLockNotFound = errors.New("unable to find lock")
+
+	UPSERT    = true
+	ReturnDoc = options.After
 )
 
 // LockDetails contains fields that are used when creating a lock.
@@ -60,7 +66,7 @@ type LockStatus struct {
 	// lock does not have a TTL.
 	TTL int64
 	// The Mongo ObjectId of the lock. Only used internally for sorting.
-	objectId bson.ObjectId
+	objectId primitive.ObjectID
 }
 
 // LockStatusesByCreatedAtDesc is a slice of LockStatus structs, ordered by
@@ -89,7 +95,7 @@ type lock struct {
 	RenewedAt *time.Time    `bson:"renewedAt"`
 	ExpiresAt *time.Time    `bson:"expiresAt"` // How TTLs are stored internally.
 	Acquired  bool          `bson:"acquired"`
-	ObjectId  bson.ObjectId `bson:"_id,omitempty"`
+	ObjectId  primitive.ObjectID `bson:"_id,omitempty"`
 }
 
 // sharedLocks represents a slice of shared locks stored in Mongo.
@@ -113,15 +119,15 @@ type resource struct {
 // creates a lock knows the lockId needed to unlock it - knowing a resource name
 // alone is not enough to unlock it.
 type Client struct {
-	session    *mgo.Session
+	client     *mongo.Client
 	db         string
 	collection string
 }
 
 // NewClient creates a new Client.
-func NewClient(session *mgo.Session, db, collection string) *Client {
+func NewClient(session *mongo.Client, db, collection string) *Client {
 	return &Client{
-		session:    session,
+		client:     session,
 		db:         db,
 		collection: collection,
 	}
@@ -129,25 +135,26 @@ func NewClient(session *mgo.Session, db, collection string) *Client {
 
 // CreateIndexes creates the required and recommended indexes for mongo-lock in
 // the client's database. Indexes that already exist are skipped.
-func (c *Client) CreateIndexes() error {
-	lockCollection := c.session.DB(c.db).C(c.collection)
-	indexes := []mgo.Index{
+func (c *Client) CreateIndexes(ctx context.Context) error {
+	lockCollection := c.client.Database(c.db).Collection(c.collection)
+
+	indexes := []mongo.IndexModel{
 		// Required.
 		{
-			Key:        []string{"resource"},
-			Unique:     true,
-			DropDups:   true,
-			Background: false,
-			Sparse:     true,
+			Keys:    bson.M{"resource": 1},
+			Options: options.Index().SetUnique(true).SetBackground(false).SetSparse(true),
 		},
+
 		// Optional.
-		{Key: []string{"exclusive.LockId"}},
-		{Key: []string{"exclusive.ExpiresAt"}},
-		{Key: []string{"shared.locks.LockId"}},
-		{Key: []string{"shared.locks.ExpiresAt"}},
+		{Keys:    bson.M{"exclusive.LockId": 1}},
+		{Keys:    bson.M{"exclusive.ExpiresAt": 1}},
+		{Keys:    bson.M{"shared.locks.LockId": 1}},
+		{Keys:    bson.M{"shared.locks.ExpiresAt": 1}},
+
 	}
+
 	for _, idx := range indexes {
-		if err := lockCollection.EnsureIndex(idx); err != nil {
+		if _, err := lockCollection.Indexes().CreateOne(ctx, idx); err != nil {
 			return err
 		}
 	}
@@ -157,33 +164,26 @@ func (c *Client) CreateIndexes() error {
 // XLock creates an exclusive lock on a resource and associates it with the
 // provided lockId. Additional details about the lock can be supplied via
 // LockDetails.
-func (c *Client) XLock(resourceName, lockId string, ld LockDetails) error {
+func (c *Client) XLock(ctx context.Context, resourceName, lockId string, ld LockDetails) error {
 	currentTime := time.Now()
-	selector := bson.M{
+	filter := bson.M{
 		"resource": resourceName,
 		"$or": []bson.M{
-			bson.M{"exclusive.acquired": false},
-			bson.M{"exclusive.expiresAt": bson.M{"$lte": &currentTime}},
+			{"exclusive.acquired": false},
+			{"exclusive.expiresAt": bson.M{"$lte": &currentTime}},
 		},
 		"shared.count": 0,
 	}
 
-	r := &resource{
-		Name:      resourceName,
-		Exclusive: lockFromDetails(lockId, ld),
-		Shared: sharedLocks{
-			Count: 0,
-			Locks: []lock{},
+	r := bson.M{"$set": &resource{
+			Name:      resourceName,
+			Exclusive: lockFromDetails(lockId, ld),
+			Shared: sharedLocks{
+				Count: 0,
+				Locks: []lock{},
+			},
 		},
 	}
-
-	change := mgo.Change{
-		Update: r,
-		Upsert: true,
-	}
-
-	s := c.session.Copy()
-	defer s.Close()
 
 	// One of three things will happen when we run this change (upsert).
 	// 1) If the resource exists and has any locks on it (shared or
@@ -192,10 +192,19 @@ func (c *Client) XLock(resourceName, lockId string, ld LockDetails) error {
 	//    update it to obtain an exclusive lock.
 	// 3) If the resource doesn't exist yet, it will be inserted which will
 	//    give us an exclusive lock on it.
-	_, err := s.DB(c.db).C(c.collection).Find(selector).Apply(change, map[string]interface{}{})
+	result := c.client.Database(c.db).Collection(c.collection).FindOneAndUpdate(
+		ctx,
+		filter,
+		r,
+		&options.FindOneAndUpdateOptions{Upsert: &UPSERT, ReturnDocument: &ReturnDoc})
+
+	rr := map[string]interface{}{}
+	err := result.Decode(rr)
 	if err != nil {
-		if mgo.IsDup(err) {
-			return ErrAlreadyLocked
+		if ce, ok:=err.(mongo.CommandError); ok {
+			if ce.Code == 11000 {
+				return ErrAlreadyLocked
+			}
 		}
 		return err
 	}
@@ -212,8 +221,8 @@ func (c *Client) XLock(resourceName, lockId string, ld LockDetails) error {
 // the lock request will fail unless there are less than N shared locks on the
 // resource already. If maxConcurrent is negative then there is no limit to the
 // number of shared locks that can exist.
-func (c *Client) SLock(resourceName, lockId string, ld LockDetails, maxConcurrent int) error {
-	selector := bson.M{
+func (c *Client) SLock(ctx context.Context, resourceName, lockId string, ld LockDetails, maxConcurrent int) error {
+	filter := bson.M{
 		"resource":           resourceName,
 		"exclusive.acquired": false,
 		"shared.locks.lockId": bson.M{
@@ -221,25 +230,19 @@ func (c *Client) SLock(resourceName, lockId string, ld LockDetails, maxConcurren
 		},
 	}
 	if maxConcurrent >= 0 {
-		selector["shared.count"] = bson.M{
+		filter["shared.count"] = bson.M{
 			"$lt": maxConcurrent,
 		}
 	}
 
-	change := mgo.Change{
-		Update: bson.M{
-			"$inc": bson.M{
-				"shared.count": 1,
-			},
-			"$push": bson.M{
-				"shared.locks": lockFromDetails(lockId, ld),
-			},
+	update := bson.M{
+		"$inc": bson.M{
+			"shared.count": 1,
 		},
-		Upsert: true,
+		"$push": bson.M{
+			"shared.locks": lockFromDetails(lockId, ld),
+		},
 	}
-
-	s := c.session.Copy()
-	defer s.Close()
 
 	// One of three things will happen when we run this change (upsert).
 	// 1) If the resource exists and has an exclusive lock on it, or if it
@@ -251,12 +254,20 @@ func (c *Client) SLock(resourceName, lockId string, ld LockDetails, maxConcurren
 	//    shared locks on it already.
 	// 3) If the resource doesn't exist yet, it will be inserted which will
 	//    give us a shared lock on it.
-	_, err := s.DB(c.db).C(c.collection).Find(selector).Apply(change, map[string]interface{}{})
+
+	result := c.client.Database(c.db).Collection(c.collection).FindOneAndUpdate(
+		ctx,
+		filter,
+		update,
+		&options.FindOneAndUpdateOptions{Upsert: &UPSERT, ReturnDocument: &ReturnDoc})
+
+	rr := map[string]interface{}{}
+	err := result.Decode(rr)
+
 	if err != nil {
-		if mgo.IsDup(err) {
-			return ErrAlreadyLocked
-		}
-		return err
+		// TODO if mgo.IsDup(err) {
+		return ErrAlreadyLocked
+
 	}
 
 	// Acquired lock.
@@ -272,12 +283,12 @@ func (c *Client) SLock(resourceName, lockId string, ld LockDetails, maxConcurren
 // An error will only be returned if there is an issue unlocking a lock; an
 // error will not be returned if a lock does not exist. If an error is returned,
 // it is safe and recommended to retry this method until until there is no error.
-func (c *Client) Unlock(lockId string) ([]LockStatus, error) {
+func (c *Client) Unlock(ctx context.Context, lockId string) ([]LockStatus, error) {
 	// First find the locks associated with the lockId.
 	filter := Filter{
 		LockId: lockId,
 	}
-	locks, err := c.Status(filter)
+	locks, err := c.Status(ctx, filter)
 	if err != nil {
 		return []LockStatus{}, err
 	}
@@ -292,9 +303,9 @@ func (c *Client) Unlock(lockId string) ([]LockStatus, error) {
 		var err error
 		switch lock.Type {
 		case LOCK_TYPE_EXCLUSIVE:
-			err = c.xUnlock(lock.Resource, lock.LockId)
+			err = c.xUnlock(ctx, lock.Resource, lock.LockId)
 		case LOCK_TYPE_SHARED:
-			err = c.sUnlock(lock.Resource, lock.LockId)
+			err = c.sUnlock(ctx, lock.Resource, lock.LockId)
 		}
 		if err != nil {
 			if err == ErrLockNotFound {
@@ -313,7 +324,7 @@ func (c *Client) Unlock(lockId string) ([]LockStatus, error) {
 
 // Status returns the status of locks that match the provided filter. Fields
 // with zero values in the Filter struct are ignored.
-func (c *Client) Status(f Filter) ([]LockStatus, error) {
+func (c *Client) Status(ctx context.Context, f Filter) ([]LockStatus, error) {
 	// Construct two queries, one for exclusive locks and one for shared
 	// locks, which will get combined with the "OR" operator before we send
 	// the final query to Mongo.
@@ -434,14 +445,32 @@ func (c *Client) Status(f Filter) ([]LockStatus, error) {
 		},
 	}
 
-	s := c.session.Copy()
-	defer s.Close()
 
 	resources := []resource{}
-	err := s.DB(c.db).C(c.collection).Pipe(query).All(&resources)
+	//err := c.client.Database(c.db).Collection(c.collection).Pipe(query).All(&resources)
+	cur, err := c.client.Database(c.db).Collection(c.collection).Aggregate(ctx, query)
 	if err != nil {
 		return []LockStatus{}, err
 	}
+
+	defer cur.Close(ctx)
+
+	for cur.Next(ctx) {
+		var result resource
+		err := cur.Decode(&result)
+		if err != nil {
+			return []LockStatus{}, err
+		}
+
+		resources = append(resources, result)
+	}
+	if err := cur.Err(); err != nil {
+		return []LockStatus{}, err
+	}
+	//err = result.Decode(&resources)
+	//if err != nil {
+	//return []LockStatus{}, err
+	//}
 
 	// Convert the results set to a []LockStatus.
 	statuses := []LockStatus{}
@@ -479,12 +508,12 @@ func (c *Client) Status(f Filter) ([]LockStatus, error) {
 // not all locks have been renewed, or if an error is returned, the caller
 // should assume that none of the locks are safe to use, and they should unlock
 // the lockId.
-func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
+func (c *Client) Renew(ctx context.Context, lockId string, ttl uint) ([]LockStatus, error) {
 	// Retrieve all of the locks with the given lockId.
 	filter := Filter{
 		LockId: lockId,
 	}
-	locks, err := c.Status(filter)
+	locks, err := c.Status(ctx, filter)
 	if err != nil {
 		return []LockStatus{}, err
 	}
@@ -507,7 +536,7 @@ func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
 	// Update the expiration date for each lock.
 	statuses := []LockStatus{}
 	selector := bson.M{}
-	change := mgo.Change{}
+	change := bson.M{}
 	for _, lock := range locks {
 		if lock.Type == LOCK_TYPE_EXCLUSIVE {
 			selector = bson.M{
@@ -518,12 +547,10 @@ func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
 				},
 			}
 
-			change = mgo.Change{
-				Update: bson.M{
-					"$set": bson.M{
-						"exclusive.expiresAt": newExpiration,
-						"exclusive.renewedAt": renewedAt,
-					},
+			change = bson.M{
+				"$set": bson.M{
+					"exclusive.expiresAt": newExpiration,
+					"exclusive.renewedAt": renewedAt,
 				},
 			}
 		}
@@ -537,18 +564,13 @@ func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
 				},
 			}
 
-			change = mgo.Change{
-				Update: bson.M{
-					"$set": bson.M{
-						"shared.locks.$.expiresAt": newExpiration,
-						"shared.locks.$.renewedAt": renewedAt,
-					},
+			change = bson.M{
+				"$set": bson.M{
+					"shared.locks.$.expiresAt": newExpiration,
+					"shared.locks.$.renewedAt": renewedAt,
 				},
 			}
 		}
-
-		s := c.session.Copy()
-		defer s.Close()
 
 		// One of two things will happen when we run this change.
 		// 1) If the lock doesn't exist, or if it does exist but its
@@ -556,10 +578,18 @@ func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
 		//    returned.
 		// 2) If the lock exists and its TTL is greater than 1 second,
 		//    its TTL will be updated.
-		_, err := s.DB(c.db).C(c.collection).Find(selector).Apply(change, map[string]interface{}{})
+		result := c.client.Database(c.db).Collection(c.collection).FindOneAndUpdate(
+			ctx,
+			selector,
+			change,
+			&options.FindOneAndUpdateOptions{Upsert: &UPSERT, ReturnDocument: &ReturnDoc})
+
+		rr := map[string]interface{}{}
+		err := result.Decode(rr)
 		if err != nil {
-			if err == mgo.ErrNotFound {
-				return statuses, ErrLockNotFound
+			if _,ok:=err.(mongo.CommandError); ok {
+					// TODO not found
+						return statuses, ErrLockNotFound
 			}
 			return statuses, err
 		}
@@ -575,22 +605,17 @@ func (c *Client) Renew(lockId string, ttl uint) ([]LockStatus, error) {
 // ------------------------------------------------------------------------- //
 
 // xUnlock unlocks an exclusive lock on a resource.
-func (c *Client) xUnlock(resourceName, lockId string) error {
+func (c *Client) xUnlock(ctx context.Context, resourceName, lockId string) error {
 	selector := bson.M{
 		"resource":         resourceName,
 		"exclusive.lockId": lockId,
 	}
 
-	change := mgo.Change{
-		Update: bson.M{
-			"$set": bson.M{
-				"exclusive": &lock{},
-			},
+	change := bson.M{
+		"$set": bson.M{
+			"exclusive": &lock{},
 		},
 	}
-
-	s := c.session.Copy()
-	defer s.Close()
 
 	// One of two things will happen when we run this change.
 	// 1) If the resource doesn't exist, or it exists but doesn't have an
@@ -598,12 +623,29 @@ func (c *Client) xUnlock(resourceName, lockId string) error {
 	//    be returned.
 	// 2) If the resource exists and has an exclusive lock with the given
 	//    lockId on it, the exclusive lock will be removed from the resource.
-	_, err := s.DB(c.db).C(c.collection).Find(selector).Apply(change, map[string]interface{}{})
+
+	result := c.client.Database(c.db).Collection(c.collection).FindOneAndUpdate(
+		ctx,
+		selector,
+		change,
+		&options.FindOneAndUpdateOptions{Upsert: &UPSERT, ReturnDocument: &ReturnDoc})
+
+	rr := map[string]interface{}{}
+	err := result.Decode(rr)
 	if err != nil {
-		if err == mgo.ErrNotFound {
-			return ErrLockNotFound
+		if we, ok:=err.(mongo.WriteException); ok {
+			for _,e:=range we.WriteErrors {
+				if e.Code == 11000 {
+					return ErrAlreadyLocked
+				}
+			}
 		}
 		return err
+	}
+
+
+	if _, ok:=err.(mongo.CommandError); ok {
+		return ErrLockNotFound
 	}
 
 	// Unlocked lock.
@@ -611,27 +653,22 @@ func (c *Client) xUnlock(resourceName, lockId string) error {
 }
 
 // sUnlock unlocks a shared lock on a resource.
-func (c *Client) sUnlock(resourceName, lockId string) error {
+func (c *Client) sUnlock(ctx context.Context, resourceName, lockId string) error {
 	selector := bson.M{
 		"resource":            resourceName,
 		"shared.locks.lockId": lockId,
 	}
 
-	change := mgo.Change{
-		Update: bson.M{
-			"$inc": bson.M{
-				"shared.count": -1,
-			},
-			"$pull": bson.M{
-				"shared.locks": bson.M{
-					"lockId": lockId,
-				},
+	change := bson.M{
+		"$inc": bson.M{
+			"shared.count": -1,
+		},
+		"$pull": bson.M{
+			"shared.locks": bson.M{
+				"lockId": lockId,
 			},
 		},
 	}
-
-	s := c.session.Copy()
-	defer s.Close()
 
 	// One of two things will happen when we run this change.
 	// 1) If the resource doesn't exist, or it exists but doesn't have a
@@ -640,13 +677,37 @@ func (c *Client) sUnlock(resourceName, lockId string) error {
 	// 2) If the resource exists and has a shared lock with the given lockId
 	//    on it, the shared lock corresponding to the lockId will be removed
 	//    from the resource.
-	_, err := s.DB(c.db).C(c.collection).Find(selector).Apply(change, map[string]interface{}{})
+
+
+	result := c.client.Database(c.db).Collection(c.collection).FindOneAndUpdate(
+		ctx,
+		selector,
+		change,
+		&options.FindOneAndUpdateOptions{Upsert: &UPSERT, ReturnDocument: &ReturnDoc})
+
+	rr := map[string]interface{}{}
+	err := result.Decode(rr)
 	if err != nil {
-		if err == mgo.ErrNotFound {
-			return ErrLockNotFound
+		if we, ok:=err.(mongo.WriteException); ok {
+			for _,e:=range we.WriteErrors {
+				if e.Code == 11000 {
+					return ErrAlreadyLocked
+				}
+			}
 		}
 		return err
 	}
+
+	if _, ok:=err.(mongo.CommandError); ok {
+		return ErrLockNotFound
+	}
+
+	//if err != nil {
+	//	if err == mgo.ErrNotFound {
+	//		return ErrLockNotFound
+	//	}
+	//	return err
+	//}
 
 	// Unlocked lock.
 	return nil
@@ -660,7 +721,7 @@ func lockFromDetails(lockId string, ld LockDetails) lock {
 		LockId:    &lockId,
 		CreatedAt: &now,
 		Acquired:  true,
-		ObjectId:  bson.NewObjectId(),
+		ObjectId:  primitive.NewObjectID(),
 	}
 
 	if ld.Owner != "" {
@@ -725,6 +786,6 @@ func (ls LockStatusesByCreatedAtDesc) Less(i, j int) bool {
 	// ObjectIds are a true indicator of which lock was created first.
 	// CreatedAt works fine most of the time, but it is possible for two
 	// locks to have the same CreatedAt value.
-	return ls[i].objectId > ls[j].objectId
+	return ls[i].objectId.Timestamp().Nanosecond() > ls[j].objectId.Timestamp().Nanosecond()
 }
 func (ls LockStatusesByCreatedAtDesc) Swap(i, j int) { ls[i], ls[j] = ls[j], ls[i] }

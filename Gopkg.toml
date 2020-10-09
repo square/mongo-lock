@@ -24,15 +24,14 @@
 #   go-tests = true
 #   unused-packages = true
 
-
 [[constraint]]
   name = "github.com/go-test/deep"
   version = "1.0.1"
 
-[[constraint]]
-  branch = "master"
-  name = "github.com/mongo-go/testdb"
-
 [prune]
   go-tests = true
   unused-packages = true
+
+[[constraint]]
+  name = "go.mongodb.org/mongo-driver"
+  version = "1.4.2"
