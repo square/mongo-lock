@@ -1,4 +1,6 @@
 language: go
+go:
+  - 1.13.x
 env:
   - TEST_MONGO_URL=127.0.0.1
 services:
