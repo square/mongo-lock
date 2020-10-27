@@ -42,10 +42,15 @@ Here is an example of how to use this package:
 package main
 
 import (
+	"context"
 	"log"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/writeconcern"
 
 	"github.com/square/mongo-lock"
-	"github.com/globalsign/mgo"
 )
 
 func main() {
@@ -54,34 +59,48 @@ func main() {
 	database := "dbName"
 	collection := "collectionName"
 
-	session, err := mgo.Dial(mongoUrl)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
+	m, err := mongo.Connect(ctx, options.Client().
+		ApplyURI(mongoUrl).
+		SetWriteConcern(writeconcern.New(writeconcern.WMajority())))
+
 	if err != nil {
 		log.Fatal(err)
 	}
-	session.SetSafe(&mgo.Safe{WMode: "majority"})
+
+    defer func() {
+        if err = m.Disconnect(ctx); err != nil {
+            panic(err)
+        }
+    }()
+
+    // Configure the client for the database and collection the lock will go into.
+	col := m.Database(database).Collection(collection)
 
 	// Create a MongoDB lock client.
-	c := lock.NewClient(session, database, collection)
+	c := lock.NewClient(col)
 
 	// Create the required and recommended indexes.
-	c.CreateIndexes()
+	c.CreateIndexes(ctx)
 
 	lockId := "abcd1234"
 
 	// Create an exclusive lock on resource1.
-	err = c.XLock("resource1", lockId, lock.LockDetails{})
+	err = c.XLock(ctx, "resource1", lockId, lock.LockDetails{})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Create a shared lock on resource2.
-	err = c.SLock("resource2", lockId, lock.LockDetails{}, -1)
+	err = c.SLock(ctx, "resource2", lockId, lock.LockDetails{}, -1)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Unlock all locks that have our lockId.
-	_, err = c.Unlock(lockId)
+	_, err = c.Unlock(ctx, lockId)
 	if err != nil {
 		log.Fatal(err)
 	}

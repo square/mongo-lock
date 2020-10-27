@@ -26,7 +26,7 @@ func NewPurger(client *Client) Purger {
 	}
 }
 
-func (p *purger) Purge(ctx context.Context,) ([]LockStatus, error) {
+func (p *purger) Purge(ctx context.Context) ([]LockStatus, error) {
 	// Get all locks with a TTL of less than 1, i.e. 0.
 	filter := Filter{
 		TTLlt: 1,
