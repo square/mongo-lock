@@ -458,10 +458,6 @@ func (c *Client) Status(ctx context.Context, f Filter) ([]LockStatus, error) {
 	if err := cur.Err(); err != nil {
 		return []LockStatus{}, err
 	}
-	//err = result.Decode(&resources)
-	//if err != nil {
-	//return []LockStatus{}, err
-	//}
 
 	// Convert the results set to a []LockStatus.
 	statuses := []LockStatus{}
@@ -575,11 +571,11 @@ func (c *Client) Renew(ctx context.Context, lockId string, ttl uint) ([]LockStat
 			change,
 			&options.FindOneAndUpdateOptions{ReturnDocument: &ReturnDoc})
 
-		rr := map[string]interface{}{}
-		err := result.Decode(rr)
+		doc := map[string]interface{}{}
+		err := result.Decode(doc)
 
 		if err != nil {
-			if len(rr) == 0 {
+			if len(doc) == 0 {
 				return statuses, ErrLockNotFound
 			}
 			return statuses, err
@@ -621,10 +617,10 @@ func (c *Client) xUnlock(ctx context.Context, resourceName, lockId string) error
 		change,
 		&options.FindOneAndUpdateOptions{ReturnDocument: &ReturnDoc})
 
-	rr := map[string]interface{}{}
-	err := result.Decode(rr)
+	doc := map[string]interface{}{}
+	err := result.Decode(doc)
 	if err != nil {
-		if len(rr) == 0 {
+		if len(doc) == 0 {
 			return ErrLockNotFound
 		}
 		return err
@@ -666,10 +662,10 @@ func (c *Client) sUnlock(ctx context.Context, resourceName, lockId string) error
 		change,
 		&options.FindOneAndUpdateOptions{ReturnDocument: &ReturnDoc})
 
-	rr := map[string]interface{}{}
-	err := result.Decode(rr)
+	doc := map[string]interface{}{}
+	err := result.Decode(doc)
 	if err != nil {
-		if len(rr) == 0 {
+		if len(doc) == 0 {
 			return ErrLockNotFound
 		}
 		return err

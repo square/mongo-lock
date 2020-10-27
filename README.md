@@ -42,33 +42,33 @@ Here is an example of how to use this package:
 package main
 
 import (
-	"context"
-	"log"
-	"time"
+    "context"
+    "log"
+    "time"
 
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/writeconcern"
+    "go.mongodb.org/mongo-driver/mongo"
+    "go.mongodb.org/mongo-driver/mongo/options"
+    "go.mongodb.org/mongo-driver/mongo/writeconcern"
 
-	"github.com/square/mongo-lock"
+    "github.com/square/mongo-lock"
 )
 
 func main() {
-	// Create a Mongo session and set the write mode to "majority".
-	mongoUrl := "youMustProvideThis"
-	database := "dbName"
-	collection := "collectionName"
+    // Create a Mongo session and set the write mode to "majority".
+    mongoUrl := "youMustProvideThis"
+    database := "dbName"
+    collection := "collectionName"
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-	defer cancel()
+    ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+    defer cancel()
 
-	m, err := mongo.Connect(ctx, options.Client().
-		ApplyURI(mongoUrl).
-		SetWriteConcern(writeconcern.New(writeconcern.WMajority())))
+    m, err := mongo.Connect(ctx, options.Client().
+        ApplyURI(mongoUrl).
+        SetWriteConcern(writeconcern.New(writeconcern.WMajority())))
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
     defer func() {
         if err = m.Disconnect(ctx); err != nil {
@@ -77,33 +77,33 @@ func main() {
     }()
 
     // Configure the client for the database and collection the lock will go into.
-	col := m.Database(database).Collection(collection)
+    col := m.Database(database).Collection(collection)
 
-	// Create a MongoDB lock client.
-	c := lock.NewClient(col)
+    // Create a MongoDB lock client.
+    c := lock.NewClient(col)
 
-	// Create the required and recommended indexes.
-	c.CreateIndexes(ctx)
+    // Create the required and recommended indexes.
+    c.CreateIndexes(ctx)
 
-	lockId := "abcd1234"
+    lockId := "abcd1234"
 
-	// Create an exclusive lock on resource1.
-	err = c.XLock(ctx, "resource1", lockId, lock.LockDetails{})
-	if err != nil {
-		log.Fatal(err)
-	}
+    // Create an exclusive lock on resource1.
+    err = c.XLock(ctx, "resource1", lockId, lock.LockDetails{})
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	// Create a shared lock on resource2.
-	err = c.SLock(ctx, "resource2", lockId, lock.LockDetails{}, -1)
-	if err != nil {
-		log.Fatal(err)
-	}
+    // Create a shared lock on resource2.
+    err = c.SLock(ctx, "resource2", lockId, lock.LockDetails{}, -1)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	// Unlock all locks that have our lockId.
-	_, err = c.Unlock(ctx, lockId)
-	if err != nil {
-		log.Fatal(err)
-	}
+    // Unlock all locks that have our lockId.
+    _, err = c.Unlock(ctx, lockId)
+    if err != nil {
+        log.Fatal(err)
+    }
 }
 
 
