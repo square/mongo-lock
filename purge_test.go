@@ -3,30 +3,35 @@
 package lock_test
 
 import (
+	"context"
 	"sort"
+
 	"testing"
 	"time"
 
-	"github.com/square/mongo-lock"
+	lock "github.com/square/mongo-lock"
 )
 
 func TestPurge(t *testing.T) {
 	// setup and teardown are defined in lock_test.go
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource2", "bbbb", lock.LockDetails{TTL: 1})
+	err = client.XLock(ctx, "resource2", "bbbb", lock.LockDetails{TTL: 1})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource3", "cccc", lock.LockDetails{TTL: 1}, -1)
+	err = client.SLock(ctx, "resource3", "cccc", lock.LockDetails{TTL: 1}, -1)
 	if err != nil {
 		t.Error(err)
 	}
@@ -36,7 +41,7 @@ func TestPurge(t *testing.T) {
 
 	// Purge the locks.
 	purger := lock.NewPurger(client)
-	purged, err := purger.Purge()
+	purged, err := purger.Purge(ctx)
 	if err != nil {
 		t.Error(err)
 	}
@@ -58,21 +63,24 @@ func TestPurge(t *testing.T) {
 
 func TestPurgeSameLockIdDiffTTLs(t *testing.T) {
 	// setup and teardown are defined in lock_test.go
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks with different TTLs, all owned by the same lockId.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{}) // no TTL
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{}) // no TTL
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource2", "aaaa", lock.LockDetails{TTL: 30})
+	err = client.XLock(ctx, "resource2", "aaaa", lock.LockDetails{TTL: 30})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource3", "aaaa", lock.LockDetails{TTL: 1}, -1)
+	err = client.SLock(ctx, "resource3", "aaaa", lock.LockDetails{TTL: 1}, -1)
 	if err != nil {
 		t.Error(err)
 	}
@@ -82,7 +90,7 @@ func TestPurgeSameLockIdDiffTTLs(t *testing.T) {
 
 	// Purge the locks.
 	purger := lock.NewPurger(client)
-	purged, err := purger.Purge()
+	purged, err := purger.Purge(ctx)
 	if err != nil {
 		t.Error(err)
 	}

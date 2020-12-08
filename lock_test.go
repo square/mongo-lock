@@ -3,115 +3,170 @@
 package lock_test
 
 import (
+	"context"
+	"crypto/rand"
 	"fmt"
 	"sort"
 	"testing"
 	"time"
 
-	"github.com/globalsign/mgo"
 	"github.com/go-test/deep"
-	"github.com/mongo-go/testdb"
-	"github.com/square/mongo-lock"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+
+	lock "github.com/square/mongo-lock"
 )
 
-var testDb *testdb.TestDB
+func getRandomString() string {
+	n := 5
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return fmt.Sprintf("%X", b)
+}
 
-func setup(t *testing.T) *mgo.Collection {
+var testDb *mongo.Client
+
+func setup(t *testing.T) *mongo.Collection {
+	collection := getRandomString()
+
+	var err error
 	if testDb == nil {
-		testDb = testdb.NewTestDB("localhost:3000", "test", time.Duration(2)*time.Second)
-		testDb.OverrideWithEnvVars()
+		testDb, err = mongo.Connect(context.Background(), options.Client().ApplyURI("mongodb://localhost:27017"))
 
-		if err := testDb.Connect(); err != nil {
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Add the required unique index on the 'resource' field.
-	indexes := []mgo.Index{
-		{
-			Key:        []string{"resource"},
-			Unique:     true,
-			DropDups:   true,
-			Background: false,
-			Sparse:     true,
-		},
+	index := mongo.IndexModel{
+		Keys:    bson.M{"resource": 1},
+		Options: options.Index().SetUnique(true).SetBackground(false).SetSparse(true),
 	}
 
-	c, err := testDb.CreateRandomCollection(&mgo.CollectionInfo{}, indexes)
+	_, err = testDb.Database("test").Collection(collection).Indexes().CreateOne(context.Background(), index)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return c
+	return testDb.Database("test").Collection(collection)
 }
 
-func teardown(t *testing.T, c *mgo.Collection) {
+func teardown(t *testing.T, c *mongo.Collection) {
 	if testDb == nil {
 		t.Errorf("must call setup before teardown")
 	}
 
-	if err := testDb.DropCollection(c); err != nil {
+	if err := c.Drop(context.Background()); err != nil {
 		t.Error(err)
 	}
 }
 
+type index struct {
+	Name string
+	Keys bson.D
+}
+
 func TestCreateIndexes(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
-	err := client.CreateIndexes()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
+	err := client.CreateIndexes(ctx)
 	if err != nil {
 		t.Error(err)
 	}
 
-	indexes, err := coll.Indexes()
+	cur, err := collection.Indexes().List(ctx)
 	if err != nil {
 		t.Error(err)
 	}
+	defer cur.Close(ctx)
 
-	expectedIndexes := []mgo.Index{
-		{Key: []string{"_id"}, Name: "_id_"},
-		{Key: []string{"exclusive.ExpiresAt"}, Name: "exclusive.ExpiresAt_1"},
-		{Key: []string{"exclusive.LockId"}, Name: "exclusive.LockId_1"},
-		{Key: []string{"resource"}, Name: "resource_1", Unique: true, Sparse: true},
-		{Key: []string{"shared.locks.ExpiresAt"}, Name: "shared.locks.ExpiresAt_1"},
-		{Key: []string{"shared.locks.LockId"}, Name: "shared.locks.LockId_1"},
+	expectedIndexes := []index{
+		{Name: "_id_", Keys: bson.D{bson.E{"_id", int32(1)}}},
+		{Name: "resource_1", Keys: bson.D{bson.E{"resource", int32(1)}}},
+		{Name: "exclusive.LockId_1", Keys: bson.D{bson.E{"exclusive.LockId", int32(1)}}},
+		{Name: "exclusive.ExpiresAt_1", Keys: bson.D{bson.E{"exclusive.ExpiresAt", int32(1)}}},
+		{Name: "shared.locks.LockId_1", Keys: bson.D{bson.E{"shared.locks.LockId", int32(1)}}},
+		{Name: "shared.locks.ExpiresAt_1", Keys: bson.D{bson.E{"shared.locks.ExpiresAt", int32(1)}}},
 	}
 
-	for i, idx := range indexes {
-		if diff := deep.Equal(idx, expectedIndexes[i]); diff != nil {
-			t.Error(diff)
+	indexes := make([]index, 0, 6)
+	for cur.Next(ctx) {
+		var result bson.D
+
+		err := cur.Decode(&result)
+
+		if err != nil {
+			t.Error(err)
 		}
+
+		var indexName string
+		var keys bson.D
+		for _, elem := range result {
+			if elem.Key == "name" {
+				indexName = elem.Value.(string)
+			}
+			if elem.Key == "key" {
+				keys = elem.Value.(bson.D)
+			}
+		}
+		indexes = append(indexes, index{
+			Name: indexName,
+			Keys: keys,
+		})
+	}
+
+	if err := cur.Err(); err != nil {
+		t.Error(err)
+	}
+
+	if len(indexes) != 6 {
+		t.Errorf("expected 6 indexes. found %d", len(indexes))
+	}
+
+	if diff := deep.Equal(indexes, expectedIndexes); diff != nil {
+		t.Error(diff)
 	}
 }
 
 func TestLockExclusive(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource2", "aaaa", lock.LockDetails{})
+	err = client.XLock(ctx, "resource2", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource3", "bbbb", lock.LockDetails{})
+	err = client.XLock(ctx, "resource3", "bbbb", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
 
 	// Try to lock something that's already locked.
-	err = client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err = client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
-	err = client.XLock("resource1", "zzzz", lock.LockDetails{})
+	err = client.XLock(ctx, "resource1", "zzzz", lock.LockDetails{})
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
@@ -119,7 +174,7 @@ func TestLockExclusive(t *testing.T) {
 	// Create a lock with some resource name and some lockId
 	// that resource expires after some time
 	// then with same resource name and lockId can able to create lock.
-	err = client.XLock("resource4", "cccc", lock.LockDetails{TTL: 1})
+	err = client.XLock(ctx, "resource4", "cccc", lock.LockDetails{TTL: 1})
 	if err != nil {
 		t.Error(err)
 	}
@@ -128,7 +183,7 @@ func TestLockExclusive(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	// Try to lock "reource4" with "cccc", which is already expired.
-	err = client.XLock("resource4", "cccc", lock.LockDetails{})
+	err = client.XLock(ctx, "resource4", "cccc", lock.LockDetails{})
 	if err != nil {
 		t.Errorf("err = %s, failed to lock due to the resource already being locked", err)
 	}
@@ -136,100 +191,110 @@ func TestLockExclusive(t *testing.T) {
 }
 
 func TestLockShared(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
-
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	collection := setup(t)
+	defer teardown(t, collection)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.SLock("resource1", "aaaa", lock.LockDetails{}, 10)
+	err := client.SLock(ctx, "resource1", "aaaa", lock.LockDetails{}, 10)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource1", "bbbb", lock.LockDetails{}, 10)
+	err = client.SLock(ctx, "resource1", "bbbb", lock.LockDetails{}, 10)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource2", "bbbb", lock.LockDetails{}, 10)
+	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, 10)
 	if err != nil {
 		t.Error(err)
 	}
 
 	// Try to create a shared lock that already exists.
-	err = client.SLock("resource1", "aaaa", lock.LockDetails{}, 10)
+	err = client.SLock(ctx, "resource1", "aaaa", lock.LockDetails{}, 10)
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
-	err = client.SLock("resource2", "bbbb", lock.LockDetails{}, 10)
+	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, 10)
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
 
 func TestLockMaxConcurrent(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.SLock("resource1", "aaaa", lock.LockDetails{}, 2)
+	err := client.SLock(ctx, "resource1", "aaaa", lock.LockDetails{}, 2)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource1", "bbbb", lock.LockDetails{}, 2)
+	err = client.SLock(ctx, "resource1", "bbbb", lock.LockDetails{}, 2)
 	if err != nil {
 		t.Error(err)
 	}
 
 	// Try to create a third lock, which will be more than maxConcurrent.
-	err = client.SLock("resource1", "cccc", lock.LockDetails{}, 2)
+	err = client.SLock(ctx, "resource1", "cccc", lock.LockDetails{}, 2)
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
 
 func TestLockInteractions(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Trying to create a shared lock on a resource that already has an
 	// exclusive lock in it should return an error.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource1", "bbbb", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource1", "bbbb", lock.LockDetails{}, -1)
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 
 	// Trying to create an exclusive lock on a resource that already has a
 	// shared lock in it should return an error.
-	err = client.SLock("resource2", "aaaa", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource2", "aaaa", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource2", "bbbb", lock.LockDetails{})
+	err = client.XLock(ctx, "resource2", "bbbb", lock.LockDetails{})
 	if err != lock.ErrAlreadyLocked {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
 
 func TestUnlock(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Unlock an exclusive lock.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	unlocked, err := client.Unlock("aaaa")
+	unlocked, err := client.Unlock(ctx, "aaaa")
 	if err != nil {
 		t.Error(err)
 	}
@@ -241,11 +306,11 @@ func TestUnlock(t *testing.T) {
 	}
 
 	// Unlock a shared lock.
-	err = client.SLock("resource2", "bbbb", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	unlocked, err = client.Unlock("bbbb")
+	unlocked, err = client.Unlock(ctx, "bbbb")
 	if err != nil {
 		t.Error(err)
 	}
@@ -257,7 +322,7 @@ func TestUnlock(t *testing.T) {
 	}
 
 	// Try to unlock a lockId that doesn't exist.
-	unlocked, err = client.Unlock("zzzz")
+	unlocked, err = client.Unlock(ctx, "zzzz")
 	if err != nil {
 		t.Error(err)
 	}
@@ -267,35 +332,38 @@ func TestUnlock(t *testing.T) {
 }
 
 func TestUnlockOrder(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource4", "aaaa", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource4", "aaaa", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource3", "bbbb", lock.LockDetails{})
+	err = client.XLock(ctx, "resource3", "bbbb", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource2", "bbbb", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource2", "aaaa", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource2", "aaaa", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
 
 	// Make sure they are unlocked in the order of newest to oldest.
-	unlocked, err := client.Unlock("aaaa")
+	unlocked, err := client.Unlock(ctx, "aaaa")
 	if err != nil {
 		t.Error(err)
 	}
@@ -312,10 +380,14 @@ func TestUnlockOrder(t *testing.T) {
 }
 
 func TestStatusFilterTTLgte(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	_, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -327,7 +399,7 @@ func TestStatusFilterTTLgte(t *testing.T) {
 	f := lock.Filter{
 		TTLgte: 3700,
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -353,10 +425,14 @@ func TestStatusFilterTTLgte(t *testing.T) {
 }
 
 func TestStatusFilterTTLlt(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	_, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -368,7 +444,7 @@ func TestStatusFilterTTLlt(t *testing.T) {
 	f := lock.Filter{
 		TTLlt: 600,
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -382,10 +458,14 @@ func TestStatusFilterTTLlt(t *testing.T) {
 }
 
 func TestStatusFilterCreatedAfter(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	recordedTime, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -397,7 +477,7 @@ func TestStatusFilterCreatedAfter(t *testing.T) {
 	f := lock.Filter{
 		CreatedAfter: recordedTime,
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -429,10 +509,14 @@ func TestStatusFilterCreatedAfter(t *testing.T) {
 }
 
 func TestStatusFilterCreatedBefore(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	recordedTime, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -444,7 +528,7 @@ func TestStatusFilterCreatedBefore(t *testing.T) {
 	f := lock.Filter{
 		CreatedBefore: recordedTime,
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -480,10 +564,14 @@ func TestStatusFilterCreatedBefore(t *testing.T) {
 }
 
 func TestStatusFilterOwner(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	_, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -495,7 +583,7 @@ func TestStatusFilterOwner(t *testing.T) {
 	f := lock.Filter{
 		Owner: "smith",
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -523,10 +611,14 @@ func TestStatusFilterOwner(t *testing.T) {
 }
 
 func TestStatusFilterMultiple(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
+
 	_, err := initLockStatusLocks(client)
 	if err != nil {
 		t.Error(err)
@@ -540,7 +632,7 @@ func TestStatusFilterMultiple(t *testing.T) {
 		Resource: "resource1",
 		LockId:   "aaaa",
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -563,23 +655,26 @@ func TestStatusFilterMultiple(t *testing.T) {
 }
 
 func TestStatusTTLValue(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create a lock with a TTL.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{TTL: 3600})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
 	if err != nil {
 		t.Error(err)
 	}
 	// Create a lock without a TTL.
-	err = client.XLock("resource2", "bbbb", lock.LockDetails{})
+	err = client.XLock(ctx, "resource2", "bbbb", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
 	// Create a lock with a low TTL.
-	err = client.XLock("resource3", "cccc", lock.LockDetails{TTL: 1})
+	err = client.XLock(ctx, "resource3", "cccc", lock.LockDetails{TTL: 1})
 	if err != nil {
 		t.Error(err)
 	}
@@ -589,7 +684,7 @@ func TestStatusTTLValue(t *testing.T) {
 	f := lock.Filter{
 		LockId: "aaaa",
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -606,7 +701,7 @@ func TestStatusTTLValue(t *testing.T) {
 	f = lock.Filter{
 		LockId: "bbbb",
 	}
-	actual, err = client.Status(f)
+	actual, err = client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -627,7 +722,7 @@ func TestStatusTTLValue(t *testing.T) {
 	f = lock.Filter{
 		LockId: "cccc",
 	}
-	actual, err = client.Status(f)
+	actual, err = client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -642,35 +737,38 @@ func TestStatusTTLValue(t *testing.T) {
 }
 
 func TestRenew(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{TTL: 3600})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource4", "aaaa", lock.LockDetails{TTL: 3600}, -1)
+	err = client.SLock(ctx, "resource4", "aaaa", lock.LockDetails{TTL: 3600}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.XLock("resource3", "bbbb", lock.LockDetails{})
+	err = client.XLock(ctx, "resource3", "bbbb", lock.LockDetails{})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource2", "bbbb", lock.LockDetails{}, -1)
+	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, -1)
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource2", "aaaa", lock.LockDetails{TTL: 3600}, -1)
+	err = client.SLock(ctx, "resource2", "aaaa", lock.LockDetails{TTL: 3600}, -1)
 	if err != nil {
 		t.Error(err)
 	}
 
 	// Verify that locks with the given lockId have their TTL updated.
-	renewed, err := client.Renew("aaaa", 7200)
+	renewed, err := client.Renew(ctx, "aaaa", 7200)
 	if err != nil {
 		t.Error(err)
 	}
@@ -682,7 +780,7 @@ func TestRenew(t *testing.T) {
 	f := lock.Filter{
 		LockId: "aaaa",
 	}
-	actual, err := client.Status(f)
+	actual, err := client.Status(ctx, f)
 	if err != nil {
 		t.Error(err)
 	}
@@ -700,18 +798,21 @@ func TestRenew(t *testing.T) {
 }
 
 func TestRenewLockIdNotFound(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create a lock.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{TTL: 3600})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
 	if err != nil {
 		t.Error(err)
 	}
 
-	renewed, err := client.Renew("bbbb", 7200)
+	renewed, err := client.Renew(ctx, "bbbb", 7200)
 	if err != lock.ErrLockNotFound {
 		t.Errorf("err = %s, expected the renew to fail due to the lockId not existing", err)
 	}
@@ -722,17 +823,20 @@ func TestRenewLockIdNotFound(t *testing.T) {
 }
 
 func TestRenewTTLExpired(t *testing.T) {
-	coll := setup(t)
-	defer teardown(t, coll)
+	collection := setup(t)
+	defer teardown(t, collection)
 
-	client := lock.NewClient(coll.Database.Session, coll.Database.Name, coll.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
+
+	client := lock.NewClient(collection)
 
 	// Create some locks.
-	err := client.XLock("resource1", "aaaa", lock.LockDetails{TTL: 3600})
+	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
 	if err != nil {
 		t.Error(err)
 	}
-	err = client.SLock("resource4", "aaaa", lock.LockDetails{TTL: 1}, -1)
+	err = client.SLock(ctx, "resource4", "aaaa", lock.LockDetails{TTL: 1}, -1)
 	if err != nil {
 		t.Error(err)
 	}
@@ -743,7 +847,7 @@ func TestRenewTTLExpired(t *testing.T) {
 
 	// Make sure the renew fails due to the TTL being expired on one of
 	// the locks.
-	renewed, err := client.Renew("aaaa", 7200)
+	renewed, err := client.Renew(ctx, "aaaa", 7200)
 	if err != lock.ErrLockNotFound {
 		t.Errorf("err = %s, expected the renew to fail due to the TTL of a lock being < 1", err)
 	}
@@ -758,6 +862,8 @@ func TestRenewTTLExpired(t *testing.T) {
 // initLockStatusLocks initializes locks that are used for the LockStatus tests.
 // It returns a time.Time that can be used in tests to filter on CreatedAt.
 func initLockStatusLocks(client *lock.Client) (time.Time, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
+	defer cancel()
 	// Create a bunch of different locks.
 	aaaaDetails := lock.LockDetails{
 		Owner: "john",
@@ -770,15 +876,15 @@ func initLockStatusLocks(client *lock.Client) (time.Time, error) {
 	ccccDetails := lock.LockDetails{
 		TTL: 7200,
 	}
-	err := client.XLock("resource1", "aaaa", aaaaDetails)
+	err := client.XLock(ctx, "resource1", "aaaa", aaaaDetails)
 	if err != nil {
 		return time.Time{}, err
 	}
-	err = client.SLock("resource2", "aaaa", aaaaDetails, -1)
+	err = client.SLock(ctx, "resource2", "aaaa", aaaaDetails, -1)
 	if err != nil {
 		return time.Time{}, err
 	}
-	err = client.SLock("resource2", "bbbb", bbbbDetails, -1)
+	err = client.SLock(ctx, "resource2", "bbbb", bbbbDetails, -1)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -790,15 +896,15 @@ func initLockStatusLocks(client *lock.Client) (time.Time, error) {
 	recordedTime := time.Now()
 	time.Sleep(time.Duration(1) * time.Millisecond)
 
-	err = client.SLock("resource2", "cccc", ccccDetails, -1)
+	err = client.SLock(ctx, "resource2", "cccc", ccccDetails, -1)
 	if err != nil {
 		return time.Time{}, err
 	}
-	err = client.XLock("resource3", "bbbb", bbbbDetails)
+	err = client.XLock(ctx, "resource3", "bbbb", bbbbDetails)
 	if err != nil {
 		return time.Time{}, err
 	}
-	err = client.SLock("resource4", "cccc", ccccDetails, -1)
+	err = client.SLock(ctx, "resource4", "cccc", ccccDetails, -1)
 	if err != nil {
 		return time.Time{}, err
 	}

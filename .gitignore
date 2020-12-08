@@ -1,3 +1,4 @@
 ### GO ###
 # Ignore the vendor directory
 vendor
+.idea
