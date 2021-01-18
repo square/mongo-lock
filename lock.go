@@ -141,10 +141,10 @@ func (c *Client) CreateIndexes(ctx context.Context) error {
 		},
 
 		// Optional.
-		{Keys: bson.M{"exclusive.LockId": 1}},
-		{Keys: bson.M{"exclusive.ExpiresAt": 1}},
-		{Keys: bson.M{"shared.locks.LockId": 1}},
-		{Keys: bson.M{"shared.locks.ExpiresAt": 1}},
+		{Keys: bson.M{"exclusive.lockId": 1}},
+		{Keys: bson.M{"exclusive.expiresAt": 1}},
+		{Keys: bson.M{"shared.locks.lockId": 1}},
+		{Keys: bson.M{"shared.locks.expiresAt": 1}},
 	}
 
 	for _, idx := range indexes {
