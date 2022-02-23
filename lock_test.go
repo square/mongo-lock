@@ -15,7 +15,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	lock "github.com/square/mongo-lock"
+	lock "github.com/bettermarks/mongo-lock"
 )
 
 func getRandomString() string {

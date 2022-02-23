@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	lock "github.com/square/mongo-lock"
+	lock "github.com/bettermarks/mongo-lock"
 )
 
 func TestPurge(t *testing.T) {

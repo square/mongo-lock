@@ -1,16 +1,16 @@
 # Distributed Locks in MongoDB
 
-[![Build Status](https://travis-ci.org/square/mongo-lock.svg?branch=master)](https://travis-ci.org/square/mongo-lock)
-[![Go Report Card](https://goreportcard.com/badge/github.com/square/mongo-lock)](https://goreportcard.com/report/github.com/square/mongo-lock)
-[![Coverage Status](https://coveralls.io/repos/github/square/mongo-lock/badge.svg?branch=master&)](https://coveralls.io/github/square/mongo-lock?branch=master)
-[![GoDoc](https://godoc.org/github.com/square/mongo-lock?status.svg)](https://godoc.org/github.com/square/mongo-lock)
+[![Build Status](https://travis-ci.org/bettermarks/mongo-lock.svg?branch=master)](https://travis-ci.org/bettermarks/mongo-lock)
+[![Go Report Card](https://goreportcard.com/badge/github.com/bettermarks/mongo-lock)](https://goreportcard.com/report/github.com/bettermarks/mongo-lock)
+[![Coverage Status](https://coveralls.io/repos/github/bettermarks/mongo-lock/badge.svg?branch=master&)](https://coveralls.io/github/bettermarks/mongo-lock?branch=master)
+[![GoDoc](https://godoc.org/github.com/bettermarks/mongo-lock?status.svg)](https://godoc.org/github.com/bettermarks/mongo-lock)
 
 This package provides a Go client for creating distributed locks in MongoDB.
 
 ## Setup
 Install the package with "go get".
 ```
-go get "github.com/square/mongo-lock"
+go get "github.com/bettermarks/mongo-lock"
 ```
 
 In order to use it, you must have an instance of MongoDB running with a collection that can be used to store locks.
@@ -31,7 +31,7 @@ db.locks.createIndex( { "shared.locks.LockId": 1 } )
 db.locks.createIndex( { "shared.locks.ExpiresAt": 1 } )
 ```
 
-The [Client.CreateIndexes](https://godoc.org/github.com/square/mongo-lock#Client.CreateIndexes) method can be called to create all of the required and recommended indexes.
+The [Client.CreateIndexes](https://godoc.org/github.com/bettermarks/mongo-lock#Client.CreateIndexes) method can be called to create all of the required and recommended indexes.
 
 #### Recommended Write Concern
 To minimize the risk of losing locks when one or more nodes in your replica set fail, setting the write acknowledgement for the session to "majority" is recommended.
@@ -50,7 +50,7 @@ import (
     "go.mongodb.org/mongo-driver/mongo/options"
     "go.mongodb.org/mongo-driver/mongo/writeconcern"
 
-    "github.com/square/mongo-lock"
+    "github.com/bettermarks/mongo-lock"
 )
 
 func main() {
@@ -121,11 +121,11 @@ Here is a list of rules that the locking behavior follows
 * A resource cannot have both an exclusive lock and a shared lock on it at the same time.
 * A resource can have no locks on it at all.
 
-[1] It is possible to limit the number of shared locks that can be on a resource at a time (see the docs for [Client.SLock](https://godoc.org/github.com/square/mongo-lock#Client.SLock) for more details).
+[1] It is possible to limit the number of shared locks that can be on a resource at a time (see the docs for [Client.SLock](https://godoc.org/github.com/bettermarks/mongo-lock#Client.SLock) for more details).
 [2] A resource can't have more than one shared lock on it with the same lockId at a time.
 
 #### Additional Features
-* **TTLs**: You can optionally set a time to live (TTL) when creating a lock. If you do not set one, the lock will not have a TTL. TTLs can be renewed via the [Client.Renew](https://godoc.org/github.com/square/mongo-lock#Client.Renew) method as long as all of the locks associated with a given lockId have a TTL of at least 1 second (or no TTL at all). There is no automatic process to clean up locks that have outlived their TTL, but this package does provide a [Purger](https://godoc.org/github.com/square/mongo-lock#Purger) that can be run in a loop to accomplish this.
+* **TTLs**: You can optionally set a time to live (TTL) when creating a lock. If you do not set one, the lock will not have a TTL. TTLs can be renewed via the [Client.Renew](https://godoc.org/github.com/bettermarks/mongo-lock#Client.Renew) method as long as all of the locks associated with a given lockId have a TTL of at least 1 second (or no TTL at all). There is no automatic process to clean up locks that have outlived their TTL, but this package does provide a [Purger](https://godoc.org/github.com/bettermarks/mongo-lock#Purger) that can be run in a loop to accomplish this.
 
 
 ## Schema
@@ -167,7 +167,7 @@ To work on mongo-lock, clone it to your $GOPATH.
 #### Dependencies
 You must use [dep](https://golang.github.io/dep/) to pull in dependencies and populate your local vendor/ directory.
 ```
-cd $GOPATH/src/github.com/square/mongo-lock
+cd $GOPATH/src/github.com/bettermarks/mongo-lock
 dep ensure
 ```
 
