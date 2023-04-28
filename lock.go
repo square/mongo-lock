@@ -41,6 +41,8 @@ type LockDetails struct {
 	Owner string
 	// The host that the lock is being created from.
 	Host string
+	// Comment to add context for the lock.
+	Comment string
 	// The time to live (TTL) for the lock, in seconds. Setting this to 0
 	// means that the lock will not have a TTL.
 	TTL uint
@@ -58,6 +60,8 @@ type LockStatus struct {
 	Owner string
 	// The host that the lock was created from.
 	Host string
+	// Comment to add context for the lock.
+	Comment string
 	// The time that the lock was created at.
 	CreatedAt time.Time
 	// The time that the lock was renewed at, if applicable.
@@ -91,6 +95,7 @@ type lock struct {
 	LockId    *string            `bson:"lockId"`
 	Owner     *string            `bson:"owner"`
 	Host      *string            `bson:"host"`
+	Comment   *string            `bson:"comment"`
 	CreatedAt *time.Time         `bson:"createdAt"`
 	RenewedAt *time.Time         `bson:"renewedAt"`
 	ExpiresAt *time.Time         `bson:"expiresAt"` // How TTLs are stored internally.
@@ -691,6 +696,9 @@ func lockFromDetails(lockId string, ld LockDetails) lock {
 	}
 	if ld.Host != "" {
 		lock.Host = &ld.Host
+	}
+	if ld.Comment != "" {
+		lock.Comment = &ld.Comment
 	}
 	if ld.TTL > 0 {
 		e := now.Add(time.Duration(ld.TTL) * time.Second)
