@@ -726,6 +726,9 @@ func statusFromLock(l lock) LockStatus {
 	if l.Host != nil {
 		ls.Host = *l.Host
 	}
+	if l.Comment != nil {
+		ls.Comment = *l.Comment
+	}
 	if l.CreatedAt != nil {
 		ls.CreatedAt = *l.CreatedAt
 	}
