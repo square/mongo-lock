@@ -535,7 +535,7 @@ func (c *Client) Renew(ctx context.Context, lockId string, ttl uint) ([]LockStat
 				"resource":         lock.Resource,
 				"exclusive.lockId": lock.LockId,
 				"exclusive.expiresAt": bson.M{
-					"$gt": minExpiresAt,
+					"$gt": primitive.NewDateTimeFromTime(minExpiresAt),
 				},
 			}
 
@@ -549,10 +549,14 @@ func (c *Client) Renew(ctx context.Context, lockId string, ttl uint) ([]LockStat
 
 		if lock.Type == LOCK_TYPE_SHARED {
 			selector = bson.M{
-				"resource":            lock.Resource,
-				"shared.locks.lockId": lock.LockId,
-				"shared.locks.expiresAt": bson.M{
-					"$gt": minExpiresAt,
+				"resource": lock.Resource,
+				"shared.locks": bson.M{
+					"$elemMatch": bson.M{
+						"lockId": lock.LockId,
+						"expiresAt": bson.M{
+							"$gt": primitive.NewDateTimeFromTime(minExpiresAt),
+						},
+					},
 				},
 			}
 
