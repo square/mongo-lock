@@ -745,8 +745,16 @@ func TestRenew(t *testing.T) {
 
 	client := lock.NewClient(collection)
 
+	// Create a lock that we are not renewing on a resource that will get another
+	// lock that we will attempt to renew. If the renew operation is done wrong
+	// this lock will be renewed instead of the proper one.
+	err := client.SLock(ctx, "resource4", "cccc", lock.LockDetails{TTL: 3600}, -1)
+	if err != nil {
+		t.Error(err)
+	}
+
 	// Create some locks.
-	err := client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
+	err = client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{TTL: 3600})
 	if err != nil {
 		t.Error(err)
 	}
