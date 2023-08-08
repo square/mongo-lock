@@ -25,10 +25,10 @@ db.locks.createIndex( { resource: 1 }, { unique: true } )
 #### Recommended Indexes
 The following indexes are recommend to help the performance of certain queries:
 ```
-db.locks.createIndex( { "exclusive.LockId": 1 } )
-db.locks.createIndex( { "exclusive.ExpiresAt": 1 } )
-db.locks.createIndex( { "shared.locks.LockId": 1 } )
-db.locks.createIndex( { "shared.locks.ExpiresAt": 1 } )
+db.locks.createIndex( { "exclusive.lockId": 1 } )
+db.locks.createIndex( { "exclusive.expiresAt": 1 } )
+db.locks.createIndex( { "shared.locks.lockId": 1 } )
+db.locks.createIndex( { "shared.locks.expiresAt": 1 } )
 ```
 
 The [Client.CreateIndexes](https://godoc.org/github.com/square/mongo-lock#Client.CreateIndexes) method can be called to create all of the required and recommended indexes.
