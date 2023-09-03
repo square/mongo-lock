@@ -5,18 +5,86 @@ package lock_test
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/go-test/deep"
+	"github.com/ory/dockertest/v3"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
 	lock "github.com/square/mongo-lock"
 )
+
+var testDb *mongo.Client
+
+func TestMain(m *testing.M) {
+	var err error
+	var pool *dockertest.Pool
+	var resource *dockertest.Resource
+	mongoURL := os.Getenv("TEST_MONGO_URL")
+
+	if mongoURL == "" {
+		// uses a sensible default on windows (tcp/http) and linux/osx (socket)
+		pool, err = dockertest.NewPool("")
+		if err != nil {
+			log.Fatalf("Could not construct pool: %s", err)
+		}
+
+		// uses pool to try to connect to Docker
+		err = pool.Client.Ping()
+		if err != nil {
+			log.Fatalf("Could not connect to Docker: %s", err)
+		}
+
+		// pulls an image, creates a container based on it and runs it
+		resource, err = pool.Run("mongo", "6", []string{})
+		if err != nil {
+			log.Fatalf("Could not start resource: %s", err)
+		}
+
+		// exponential backoff-retry, because the application in the container might not be ready to accept connections yet
+		if err := pool.Retry(func() error {
+			var err error
+			testDb, err = mongo.Connect(context.Background(), options.Client().ApplyURI(fmt.Sprintf("mongodb://localhost:%s", resource.GetPort("27017/tcp"))))
+			if err != nil {
+				return err
+			}
+			return testDb.Ping(context.Background(), nil)
+		}); err != nil {
+			log.Fatalf("Could not connect to database: %s", err)
+		}
+	} else {
+		testDb, err = mongo.Connect(context.Background(), options.Client().ApplyURI(mongoURL))
+		if err != nil {
+			log.Fatalf("Could not connect to database: %s", err)
+		}
+	}
+
+	code := m.Run()
+
+	if pool != nil {
+		// You can't defer this because os.Exit doesn't care for defer
+		if err := pool.Purge(resource); err != nil {
+			log.Fatalf("Could not purge resource: %s", err)
+		}
+	}
+
+	os.Exit(code)
+}
+
+func getDatabaseName() string {
+	if value := os.Getenv("TEST_MONGO_DB"); value != "" {
+		return value
+	}
+	return "test"
+}
 
 func getRandomString() string {
 	n := 5
@@ -27,32 +95,23 @@ func getRandomString() string {
 	return fmt.Sprintf("%X", b)
 }
 
-var testDb *mongo.Client
-
 func setup(t *testing.T) *mongo.Collection {
 	collection := getRandomString()
 
 	var err error
-	if testDb == nil {
-		testDb, err = mongo.Connect(context.Background(), options.Client().ApplyURI("mongodb://localhost:27017"))
-
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
 	// Add the required unique index on the 'resource' field.
 	index := mongo.IndexModel{
 		Keys:    bson.M{"resource": 1},
-		Options: options.Index().SetUnique(true).SetBackground(false).SetSparse(true),
+		Options: options.Index().SetUnique(true).SetSparse(true),
 	}
 
-	_, err = testDb.Database("test").Collection(collection).Indexes().CreateOne(context.Background(), index)
+	col := testDb.Database(getDatabaseName()).Collection(collection)
+	_, err = col.Indexes().CreateOne(context.Background(), index)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return testDb.Database("test").Collection(collection)
+	return col
 }
 
 func teardown(t *testing.T, c *mongo.Collection) {
@@ -91,12 +150,12 @@ func TestCreateIndexes(t *testing.T) {
 	defer cur.Close(ctx)
 
 	expectedIndexes := []index{
-		{Name: "_id_", Keys: bson.D{bson.E{"_id", int32(1)}}},
-		{Name: "resource_1", Keys: bson.D{bson.E{"resource", int32(1)}}},
-		{Name: "exclusive.LockId_1", Keys: bson.D{bson.E{"exclusive.LockId", int32(1)}}},
-		{Name: "exclusive.ExpiresAt_1", Keys: bson.D{bson.E{"exclusive.ExpiresAt", int32(1)}}},
-		{Name: "shared.locks.LockId_1", Keys: bson.D{bson.E{"shared.locks.LockId", int32(1)}}},
-		{Name: "shared.locks.ExpiresAt_1", Keys: bson.D{bson.E{"shared.locks.ExpiresAt", int32(1)}}},
+		{Name: "_id_", Keys: bson.D{bson.E{Key: "_id", Value: int32(1)}}},
+		{Name: "resource_1", Keys: bson.D{bson.E{Key: "resource", Value: int32(1)}}},
+		{Name: "exclusive.lockId_1", Keys: bson.D{bson.E{Key: "exclusive.lockId", Value: int32(1)}}},
+		{Name: "exclusive.expiresAt_1", Keys: bson.D{bson.E{Key: "exclusive.expiresAt", Value: int32(1)}}},
+		{Name: "shared.locks.lockId_1", Keys: bson.D{bson.E{Key: "shared.locks.lockId", Value: int32(1)}}},
+		{Name: "shared.locks.expiresAt_1", Keys: bson.D{bson.E{Key: "shared.locks.expiresAt", Value: int32(1)}}},
 	}
 
 	indexes := make([]index, 0, 6)
@@ -163,11 +222,11 @@ func TestLockExclusive(t *testing.T) {
 
 	// Try to lock something that's already locked.
 	err = client.XLock(ctx, "resource1", "aaaa", lock.LockDetails{})
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 	err = client.XLock(ctx, "resource1", "zzzz", lock.LockDetails{})
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 
@@ -213,11 +272,11 @@ func TestLockShared(t *testing.T) {
 
 	// Try to create a shared lock that already exists.
 	err = client.SLock(ctx, "resource1", "aaaa", lock.LockDetails{}, 10)
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 	err = client.SLock(ctx, "resource2", "bbbb", lock.LockDetails{}, 10)
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
@@ -243,7 +302,7 @@ func TestLockMaxConcurrent(t *testing.T) {
 
 	// Try to create a third lock, which will be more than maxConcurrent.
 	err = client.SLock(ctx, "resource1", "cccc", lock.LockDetails{}, 2)
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
@@ -264,7 +323,7 @@ func TestLockInteractions(t *testing.T) {
 		t.Error(err)
 	}
 	err = client.SLock(ctx, "resource1", "bbbb", lock.LockDetails{}, -1)
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 
@@ -275,7 +334,7 @@ func TestLockInteractions(t *testing.T) {
 		t.Error(err)
 	}
 	err = client.XLock(ctx, "resource2", "bbbb", lock.LockDetails{})
-	if err != lock.ErrAlreadyLocked {
+	if errors.Is(err, lock.ErrAlreadyLocked) {
 		t.Errorf("err = %s, expected the lock to fail due to the resource already being locked", err)
 	}
 }
@@ -821,7 +880,7 @@ func TestRenewLockIdNotFound(t *testing.T) {
 	}
 
 	renewed, err := client.Renew(ctx, "bbbb", 7200)
-	if err != lock.ErrLockNotFound {
+	if errors.Is(err, lock.ErrLockNotFound) {
 		t.Errorf("err = %s, expected the renew to fail due to the lockId not existing", err)
 	}
 
@@ -856,7 +915,7 @@ func TestRenewTTLExpired(t *testing.T) {
 	// Make sure the renew fails due to the TTL being expired on one of
 	// the locks.
 	renewed, err := client.Renew(ctx, "aaaa", 7200)
-	if err != lock.ErrLockNotFound {
+	if errors.Is(err, lock.ErrLockNotFound) {
 		t.Errorf("err = %s, expected the renew to fail due to the TTL of a lock being < 1", err)
 	}
 

@@ -142,7 +142,7 @@ func (c *Client) CreateIndexes(ctx context.Context) error {
 		// Required.
 		{
 			Keys:    bson.M{"resource": 1},
-			Options: options.Index().SetUnique(true).SetBackground(false).SetSparse(true),
+			Options: options.Index().SetUnique(true).SetSparse(true),
 		},
 
 		// Optional.
@@ -292,8 +292,7 @@ func (c *Client) Unlock(ctx context.Context, lockId string) ([]LockStatus, error
 	}
 
 	// Sort the lock statuses by most recent CreatedAt date first.
-	var sortedLocks LockStatusesByCreatedAtDesc
-	sortedLocks = locks
+	sortedLocks := LockStatusesByCreatedAtDesc(locks)
 	sort.Sort(sortedLocks)
 
 	unlocked := []LockStatus{}
@@ -749,7 +748,7 @@ func calcTTL(expiresAt *time.Time) int64 {
 		return -1
 	}
 
-	delta := expiresAt.Sub(time.Now())
+	delta := time.Until(*expiresAt)
 	ttl := int64(delta.Seconds()) // Don't need sub-second granularity.
 	if ttl < 0 {
 		return 0

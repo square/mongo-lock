@@ -172,7 +172,7 @@ dep ensure
 ```
 
 #### Tests
-By default, tests expect a MongoDB instance to be running at "localhost:3000", and they write to a db "test" and randomly generated collection name.
+On startup, tests create a docker MongoDB instance and they write to a db "test" and randomly generated collection name.
 These defaults, however, can be overwritten with environment variables.
 ```
 export TEST_MONGO_URL="your_url"
@@ -180,7 +180,7 @@ export TEST_MONGO_DB="your_db"
 ```
 The randomly generated collection is dropped after each test.
 
-If you have docker, you can easily spin up a MongoDB instance for testing by running ``docker run --rm -p "3000:27017" mongo``.
+To spin up your own, you can easily spin up a MongoDB instance for testing by running ``docker run --rm -p "3000:27017" mongo``.
 This will start a MongoDB instance on localhost:3000, and it will remove the image when it's done.
 
 Run the tests from the root directory of this repo like so:
