@@ -5,7 +5,6 @@ package lock_test
 import (
 	"context"
 	"sort"
-
 	"testing"
 	"time"
 
@@ -50,8 +49,7 @@ func TestPurge(t *testing.T) {
 		t.Errorf("%d locks purged, expected %d", len(purged), 2)
 	}
 
-	var purgedSorted lock.LockStatusesByCreatedAtDesc
-	purgedSorted = purged
+	purgedSorted := lock.LockStatusesByCreatedAtDesc(purged)
 	sort.Sort(purgedSorted)
 	if purged[0].Resource != "resource3" {
 		t.Errorf("purged[0].Resource = %s, expected %s", purged[0].Resource, "resource3")
@@ -99,8 +97,7 @@ func TestPurgeSameLockIdDiffTTLs(t *testing.T) {
 		t.Errorf("%d locks purged, expected %d", len(purged), 3)
 	}
 
-	var purgedSorted lock.LockStatusesByCreatedAtDesc
-	purgedSorted = purged
+	purgedSorted := lock.LockStatusesByCreatedAtDesc(purged)
 	sort.Sort(purgedSorted)
 	if purged[0].Resource != "resource3" {
 		t.Errorf("purged[0].Resource = %s, expected %s", purged[0].Resource, "resource3")

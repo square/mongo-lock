@@ -80,7 +80,7 @@ func setup(t *testing.T) *mongo.Collection {
 	// Add the required unique index on the 'resource' field.
 	index := mongo.IndexModel{
 		Keys:    bson.M{"resource": 1},
-		Options: options.Index().SetUnique(true).SetBackground(false).SetSparse(true),
+		Options: options.Index().SetUnique(true).SetSparse(true),
 	}
 
 	_, err = testDb.Database("test").Collection(collection).Indexes().CreateOne(context.Background(), index)
