@@ -91,12 +91,12 @@ func TestCreateIndexes(t *testing.T) {
 	defer cur.Close(ctx)
 
 	expectedIndexes := []index{
-		{Name: "_id_", Keys: bson.D{bson.E{"_id", int32(1)}}},
-		{Name: "resource_1", Keys: bson.D{bson.E{"resource", int32(1)}}},
-		{Name: "exclusive.LockId_1", Keys: bson.D{bson.E{"exclusive.LockId", int32(1)}}},
-		{Name: "exclusive.ExpiresAt_1", Keys: bson.D{bson.E{"exclusive.ExpiresAt", int32(1)}}},
-		{Name: "shared.locks.LockId_1", Keys: bson.D{bson.E{"shared.locks.LockId", int32(1)}}},
-		{Name: "shared.locks.ExpiresAt_1", Keys: bson.D{bson.E{"shared.locks.ExpiresAt", int32(1)}}},
+		{Name: "_id_", Keys: bson.D{bson.E{Key: "_id", Value: int32(1)}}},
+		{Name: "resource_1", Keys: bson.D{bson.E{Key: "resource", Value: int32(1)}}},
+		{Name: "exclusive.lockId_1", Keys: bson.D{bson.E{Key: "exclusive.lockId", Value: int32(1)}}},
+		{Name: "exclusive.expiresAt_1", Keys: bson.D{bson.E{Key: "exclusive.expiresAt", Value: int32(1)}}},
+		{Name: "shared.locks.lockId_1", Keys: bson.D{bson.E{Key: "shared.locks.lockId", Value: int32(1)}}},
+		{Name: "shared.locks.expiresAt_1", Keys: bson.D{bson.E{Key: "shared.locks.expiresAt", Value: int32(1)}}},
 	}
 
 	indexes := make([]index, 0, 6)
