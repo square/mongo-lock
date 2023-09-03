@@ -1,6 +1,3 @@
-run:
-  timeout: 5m
-
 linters:
   enable:
     # Enabled by default linters:
