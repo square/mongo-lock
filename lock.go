@@ -688,10 +688,9 @@ func (c *Client) sUnlock(ctx context.Context, resourceName, lockId string) error
 // Specifically this removes lock entries where exclusive.lockId is nil AND shared.count is 0
 func (c *Client) Gc(ctx context.Context) error {
 	// Get all empty locks and remove
-	selector := bson.A{
-		bson.D{{Key: "exclusive.lockId", Value: nil}},
-		bson.D{{Key: "shared.count", Value: 0}},
-	}
+	selector := bson.M{"exclusive.lockId": nil,
+		"shared.count": 0}
+
 	_, err := c.collection.DeleteMany(ctx, selector)
 	if err != nil {
 		return err
